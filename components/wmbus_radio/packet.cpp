@@ -136,6 +136,11 @@ std::optional<Frame> Packet::convert_to_frame() {
   ESP_LOGD(TAG, "Have data from radio (%zu bytes)", this->data_.size());
   debugPayload("raw packet", this->data_);
 
+  // Whether data_ holds usable link-layer bytes. False when 3-of-6 decoding
+  // failed, which happens on a noisy reception and leaves the raw symbols
+  // behind — they must not be mistaken for a frame.
+  bool decoded = true;
+
   if (this->read_size() == this->data_.size()) {
     if (this->link_mode() == LinkMode::T1) {
       // TODO: Remove assumption that T1 is always A
@@ -143,6 +148,8 @@ std::optional<Frame> Packet::convert_to_frame() {
       auto decoded_data = decode3of6(this->data_);
       if (decoded_data)
         this->data_ = decoded_data.value();
+      else
+        decoded = false;
     } else if (this->link_mode() == LinkMode::C1) {
       if (this->data_.size() > 1) {
         if (this->data_[1] == WMBUS_BLOCK_A_PREAMBLE)
@@ -162,14 +169,14 @@ std::optional<Frame> Packet::convert_to_frame() {
              this->data_.size());
   }
 
-  if (this->truncated_) {
+  if (this->truncated_ && decoded) {
     // Drop the partial block at the end so the CRC trimming sees a frame that
     // stops on a block boundary. It rewrites the L-field to match, so what
     // comes out is a shorter but self-consistent telegram.
     auto usable = whole_blocks_size(this->data_.size());
     ESP_LOGW(TAG,
              "frame longer than the radio can receive (%zu of %zu bytes on "
-             "air); keeping %zu of %zu decoded bytes",
+             "air); keeping %zu of %zu link layer bytes",
              this->max_size_, this->expected_size(), usable,
              this->data_.size());
     this->data_.resize(usable);
@@ -177,7 +184,10 @@ std::optional<Frame> Packet::convert_to_frame() {
 
   bool crcOk = false;
 
-  if (this->frame_format_ == "A") {
+  if (!decoded) {
+    ESP_LOGV(TAG, "3-of-6 decoding failed for %zu bytes, dropping frame",
+             this->data_.size());
+  } else if (this->frame_format_ == "A") {
     crcOk = trimCRCsFrameFormatA(this->data_);
   } else if (this->frame_format_ == "B") {
     crcOk = trimCRCsFrameFormatB(this->data_);
