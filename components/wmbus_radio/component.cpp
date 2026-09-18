@@ -89,6 +89,7 @@ void Radio::receive_frame() {
   }
 
   auto packet = std::make_unique<Packet>();
+  packet->set_max_size(this->radio->max_frame_size());
 
   if (!this->radio->read_in_task(packet->rx_data_ptr(), packet->rx_capacity(), 0)) {
     this->radio->restart_rx();

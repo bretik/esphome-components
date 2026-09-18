@@ -51,6 +51,12 @@ public:
   // SX1262: returns length (entire buffer at once)
   virtual size_t get_frame(uint8_t *buffer, size_t length, uint32_t offset) { return 0; }
 
+  // Largest frame the chip can hold from a single reception, counted in bytes
+  // as they arrive on air; 0 means no limit. A longer frame is cut short by the
+  // hardware and its tail never reaches the driver, so the caller must not ask
+  // for more than this.
+  virtual size_t max_frame_size() { return 0; }
+
   virtual bool read_in_task(uint8_t *buffer, size_t length, uint32_t offset);
 
   void set_spi(spi::SPIDelegate *spi);

@@ -83,6 +83,22 @@ size_t Packet::expected_size() {
   return this->expected_size_;
 }
 
+void Packet::set_max_size(size_t max_size) { this->max_size_ = max_size; }
+
+size_t Packet::read_size() {
+  auto expected = this->expected_size();
+
+  if (this->max_size_ && expected > this->max_size_) {
+    // The radio cannot hold the whole frame, so only its beginning will ever
+    // arrive. Read just that much: asking for more makes the chip repeat the
+    // start of its buffer, which corrupts the frame beyond repair.
+    this->truncated_ = true;
+    return this->max_size_;
+  }
+
+  return expected;
+}
+
 size_t Packet::rx_capacity() {
   // TODO: Remove side effects?
   auto cap = this->data_.capacity() - this->data_.size();
@@ -95,9 +111,23 @@ uint8_t *Packet::rx_data_ptr() {
 }
 
 bool Packet::calculate_payload_size() {
-  auto total_length = this->expected_size();
+  auto total_length = this->read_size();
   this->data_.reserve(total_length);
   return total_length;
+}
+
+// Keeps only whole format A blocks: the first one is 10 bytes plus a 2-byte
+// CRC, every later one 16 plus 2. A frame cut mid-block ends with data that has
+// no CRC behind it, which the CRC trimming would reject, taking the blocks that
+// did arrive intact down with it.
+static size_t whole_blocks_size(size_t size) {
+  const size_t FIRST_BLOCK = 12;
+  const size_t BLOCK = 18;
+
+  if (size < FIRST_BLOCK)
+    return 0;
+
+  return FIRST_BLOCK + BLOCK * ((size - FIRST_BLOCK) / BLOCK);
 }
 
 std::optional<Frame> Packet::convert_to_frame() {
@@ -106,7 +136,7 @@ std::optional<Frame> Packet::convert_to_frame() {
   ESP_LOGD(TAG, "Have data from radio (%zu bytes)", this->data_.size());
   debugPayload("raw packet", this->data_);
 
-  if (this->expected_size() == this->data_.size()) {
+  if (this->read_size() == this->data_.size()) {
     if (this->link_mode() == LinkMode::T1) {
       // TODO: Remove assumption that T1 is always A
       this->frame_format_ = "A";
@@ -128,8 +158,21 @@ std::optional<Frame> Packet::convert_to_frame() {
       ESP_LOGE(TAG, "unknown link mode!");
     }
   } else {
-    ESP_LOGE(TAG, "expected_size: %zu NOT size: %zu", this->expected_size(),
+    ESP_LOGE(TAG, "expected_size: %zu NOT size: %zu", this->read_size(),
              this->data_.size());
+  }
+
+  if (this->truncated_) {
+    // Drop the partial block at the end so the CRC trimming sees a frame that
+    // stops on a block boundary. It rewrites the L-field to match, so what
+    // comes out is a shorter but self-consistent telegram.
+    auto usable = whole_blocks_size(this->data_.size());
+    ESP_LOGW(TAG,
+             "frame longer than the radio can receive (%zu of %zu bytes on "
+             "air); keeping %zu of %zu decoded bytes",
+             this->max_size_, this->expected_size(), usable,
+             this->data_.size());
+    this->data_.resize(usable);
   }
 
   bool crcOk = false;

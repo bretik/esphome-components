@@ -467,6 +467,12 @@ public:
   int8_t get_rssi() override;
   const char *get_name() override;
   uint16_t get_irq_status();
+
+  // The chip's data buffer is 256 bytes and reception is configured as a fixed
+  // 255-byte packet, so anything beyond that is never received. Reading past it
+  // wraps around to the start of the buffer and returns the beginning of the
+  // same frame again.
+  size_t max_frame_size() override { return RADIOLIB_SX126X_MAX_PACKET_LENGTH; }
 protected:
   uint8_t offset;
 };

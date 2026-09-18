@@ -23,6 +23,7 @@ public:
   size_t rx_capacity();
   bool calculate_payload_size();
   void set_rssi(int8_t rssi);
+  void set_max_size(size_t max_size);
 
   std::optional<Frame> convert_to_frame();
 
@@ -31,6 +32,13 @@ protected:
 
   size_t expected_size();
   size_t expected_size_ = 0;
+
+  // How many bytes we can actually read, i.e. expected_size() capped by what
+  // the radio is able to hold. Equal to expected_size() unless the frame is
+  // longer than the chip's buffer.
+  size_t read_size();
+  size_t max_size_ = 0;
+  bool truncated_ = false;
 
   uint8_t l_field();
   int8_t rssi_ = 0;
