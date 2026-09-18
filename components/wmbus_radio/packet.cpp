@@ -1,5 +1,6 @@
 #include "packet.h"
 
+#include <algorithm>
 #include <ctime>
 
 #include "esphome/components/wmbus_common/meters.h"
@@ -175,6 +176,25 @@ std::optional<Frame> Packet::convert_to_frame() {
     }
   } else if (this->frame_format_ == "B") {
     crcOk = trimCRCsFrameFormatB(this->data_);
+  }
+
+  // Diagnostika: když T1 rámec neprojde ani jako A, ani jako B, vypiš syrová
+  // 3-of-6 data, ať se dá formát určit offline místo odhadem. Jen prvních pár
+  // rámců po startu, aby to nezahltilo log.
+  if (!crcOk && !t1_encoded.empty()) {
+    static int dumped = 0;
+    if (dumped < 3) {
+      dumped++;
+      ESP_LOGW(TAG, "T1 REJECT #%d: %zu encoded bytes, dump follows", dumped,
+               t1_encoded.size());
+      for (size_t off = 0; off < t1_encoded.size(); off += 48) {
+        size_t n = std::min<size_t>(48, t1_encoded.size() - off);
+        std::vector<uint8_t> chunk(t1_encoded.begin() + off,
+                                   t1_encoded.begin() + off + n);
+        ESP_LOGW(TAG, "T1 REJECT #%d [%3zu]: %s", dumped, off,
+                 format_hex(chunk).c_str());
+      }
+    }
   }
 
   int dummy;
