@@ -103,12 +103,20 @@ bool Packet::calculate_payload_size() {
 std::optional<Frame> Packet::convert_to_frame() {
   std::optional<Frame> frame = {};
 
+  // Raw 3-of-6 bytes of a T1 packet, kept for the format B retry below.
+  std::vector<uint8_t> t1_encoded;
+
   ESP_LOGD(TAG, "Have data from radio (%zu bytes)", this->data_.size());
   debugPayload("raw packet", this->data_);
 
   if (this->expected_size() == this->data_.size()) {
     if (this->link_mode() == LinkMode::T1) {
-      // TODO: Remove assumption that T1 is always A
+      // T1 carries both frame formats and the format is not visible up front.
+      // expected_size() sizes the read for format A, which is the longer of the
+      // two, so a format B frame is followed by trailing noise — and noise does
+      // not decode, making decode3of6() reject the whole buffer. Keep the
+      // encoded bytes so format B can be retried on a prefix.
+      t1_encoded = this->data_;
       this->frame_format_ = "A";
       auto decoded_data = decode3of6(this->data_);
       if (decoded_data)
@@ -136,6 +144,35 @@ std::optional<Frame> Packet::convert_to_frame() {
 
   if (this->frame_format_ == "A") {
     crcOk = trimCRCsFrameFormatA(this->data_);
+
+    if (!crcOk && !t1_encoded.empty()) {
+      // Retry as format B. Its L-field counts the CRCs, so the frame is L + 1
+      // bytes; decode only that prefix, leaving the trailing noise out.
+      uint8_t l_field = 0;
+
+      if (t1_encoded.size() >= 3) {
+        std::vector<uint8_t> head(t1_encoded.begin(), t1_encoded.begin() + 3);
+        auto head_decoded = decode3of6(head);
+        if (head_decoded && !head_decoded->empty())
+          l_field = head_decoded->front();
+      }
+
+      size_t b_encoded_size = encoded_size(static_cast<size_t>(l_field) + 1);
+
+      if (l_field >= 11 && b_encoded_size <= t1_encoded.size()) {
+        std::vector<uint8_t> b_part(t1_encoded.begin(),
+                                    t1_encoded.begin() + b_encoded_size);
+        auto b_decoded = decode3of6(b_part);
+
+        if (b_decoded && trimCRCsFrameFormatB(b_decoded.value())) {
+          this->data_ = std::move(b_decoded.value());
+          this->frame_format_ = "B";
+          crcOk = true;
+          ESP_LOGV(TAG, "T1 frame decoded as format B (%zu bytes)",
+                   this->data_.size());
+        }
+      }
+    }
   } else if (this->frame_format_ == "B") {
     crcOk = trimCRCsFrameFormatB(this->data_);
   }
